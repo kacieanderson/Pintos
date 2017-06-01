@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <round.h>
 #include <stdio.h>
+#include <list.h>
 #include "devices/pit.h"
 #include "threads/interrupt.h"
 #include "threads/synch.h"
@@ -20,6 +21,8 @@
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
 
+static struct list blockedList; // List of blocked threads to be woken up
+
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
@@ -35,8 +38,28 @@ static void real_time_delay (int64_t num, int32_t denom);
 void
 timer_init (void) 
 {
+
+  list_init(&blockedList);
+
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+}
+
+/* Helper function for properly constructing the blockedList (with use of list_insert_ordered)
+  Compare unblockTimes of two threads (value of which is stored in list_elem of each thread). 
+  Return true when "first" thread's unblockTime occurs earlier than the "second" thread's. 
+  Return false if "first"'s unblockTime occurs at the same time or after "second"'s unblockTime.*/
+static bool compareUnblockTimes(const struct list_elem *first, const struct list_elem *second, void *aux UNUSED){
+
+  const struct thread *firstThread = list_entry(first, struct thread, blockedListElem);
+  const struct thread *secondThread = list_entry(second, struct thread, blockedListElem);
+
+  if ( (firstThread->unblockTime) < (secondThread->unblockTime) ){
+    return true;
+  } else {
+    return false;
+  }
+
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -89,11 +112,25 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
-  int64_t start = timer_ticks ();
 
-  ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  if ( (ticks) <= 0){
+    return; // for passing the alarm-negative test 
+  }
+
+  int64_t start = timer_ticks ();
+  ASSERT (intr_get_level () == INTR_ON); // interrupts are on
+
+  struct thread *temp = thread_current();
+  temp->unblockTime = (start + ticks);
+
+  enum intr_level old_level = intr_disable (); // briefly disable interrupts
+  /* Insert current thread into blockedList in correct order based on unblockTime, then block the thread.*/
+  list_insert_ordered(&blockedList, &temp->blockedListElem, compareUnblockTimes, NULL);
+  thread_block();
+  intr_set_level (old_level); // re-enable interrupts
+
+  // while (timer_elapsed (start) < ticks) 
+  //   thread_yield ();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -170,8 +207,35 @@ timer_print_stats (void)
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
+  // Temporary variables to store the blockedListElems and threads we want to check
+  struct list_elem *tempElem;
+  struct thread *tempThread;
+
   ticks++;
   thread_tick ();
+
+  if (!list_empty(&blockedList)){
+
+    // get data for the first thread on blockedList (should have the smallest unblockTime)
+    tempElem = list_front(&blockedList);
+    tempThread = list_entry(tempElem, struct thread, blockedListElem);
+
+    // unblock all threads whose unblockTime occurred before the interrupt (the current time)
+    while ( (tempThread->unblockTime) <= (ticks) ){
+
+      thread_unblock(tempThread);
+      list_pop_front(&blockedList);
+
+      // Break if current thread was the last one left on blockedList...
+      if (list_empty(&blockedList)){
+        break;
+      }
+
+      // ... but if there are more threads on blockedList, check to see if the next one can be unblocked.
+      tempElem = list_front(&blockedList);
+      tempThread = list_entry(tempElem, struct thread, blockedListElem);
+    } // end while
+  } // end if
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

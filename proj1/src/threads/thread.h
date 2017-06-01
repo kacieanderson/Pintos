@@ -92,6 +92,8 @@ struct thread
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+    struct list_elem blockedListElem; // A list element for blockedList (project 1 timer)
+    int64_t unblockTime; // Time at which current thread should be unblocked (project 1 timer)
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
