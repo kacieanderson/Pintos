@@ -7,11 +7,11 @@ A link to the online Pintos documentation [can be found here](http://web.stanfor
 
 
 ## Repository Setup
-Name: Tommy Trojan
+Name: Kacie Anderson
 
-Email: ttrojan@usc.edu
+Email: kqanders@usc.edu
 
-ID: 1234567890
+ID: 3713005513
 
 ##Project Organization
 Please make sure you organize your repository in the following manner:
