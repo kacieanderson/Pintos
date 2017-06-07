@@ -201,6 +201,10 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  if ( (t->nPriority) > (thread_current()->nPriority) ) {
+    thread_yield();
+  }
+
   return tid;
 }
 
@@ -331,18 +335,61 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
+/* Helper function for comparing the "nPriority" value of two threads.
+  Returns true when "first" thread's nPriority value is greater than or equal to the "second" thread's.
+  Returns false if "first"'s nPriority value is less than "second"'s nPriority value.*/
+bool comparePriorities(const struct list_elem *first, const struct list_elem *second, void *aux UNUSED) {
+
+  const struct thread *firstThread = list_entry(first, struct thread, elem);
+  const struct thread *secondThread = list_entry(second, struct thread, elem);
+
+  if ( (firstThread->nPriority) >= (secondThread->nPriority) ){
+    return true;
+  } else {
+    return false;
+  }
+
+}
+
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+
+  enum intr_level old_level = intr_disable (); // disable interrupts
+  bool test = false;
+
+  struct thread *temp = thread_current();
+  int initialPriority = temp->priority;
+  if (new_priority = temp->priority){
+    return;
+  }
+  temp->priority = new_priority;
+
+  if ( (new_priority) > (temp->nPriority)) {
+    setNewPriority(temp, new_priority);
+  } else {
+    int updatedPriority = getNewPriority(temp);
+    setNewPriority(temp, updatedPriority);
+    test = true;
+  }
+
+  // if ( (new_priority) < (initialPriority) ){
+  //   thread_yield();
+  // }
+
+  intr_set_level (old_level); // re-enable interrupts
+
+  if (test) {
+    thread_yield();
+  }
 }
 
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) 
 {
-  return thread_current ()->priority;
+  return thread_current ()->nPriority;
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -464,6 +511,10 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
 
+  t->nPriority = priority;
+  list_init(&(t->locksHeld));
+  t->locksWaitingOn = NULL;
+
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
@@ -578,6 +629,77 @@ allocate_tid (void)
 
   return tid;
 }
+
+/* This function updates the priority of the current thread "temp." 
+  Priority donation goes into effect via recursion if "temp" is waiting on another thread with its lock.*/
+void setNewPriority(struct thread *temp, int newPriorityValue) {
+
+  if (temp->nPriority == newPriorityValue){
+    return;
+  }
+
+  temp->nPriority = newPriorityValue;
+  struct lock *lockList = temp->locksWaitingOn;
+
+  // Check to see if temp is waiting on a lock
+  if ( (lockList) != NULL) {
+
+    struct thread *holdingThread = temp->locksWaitingOn->holder;
+
+    // Make sure list of waiting threads is in order so that the highest priority is first
+    list_remove(&temp->elem);
+    list_insert_ordered( (&lockList->semaphore.waiters), (&temp->elem), (comparePriorities), NULL);
+
+
+
+    if ( (newPriorityValue) > (holdingThread->nPriority) ) {
+      setNewPriority(holdingThread, newPriorityValue);
+    } else if ( (newPriorityValue) < (holdingThread->nPriority) ) {
+      int recalcPriority = getNewPriority(holdingThread);
+
+      if ( (holdingThread->nPriority) != (recalcPriority) ) {
+        setNewPriority(holdingThread, recalcPriority);
+      }
+    }
+
+  } else {
+
+    if ( (temp->elem.next != NULL) && (temp->elem.prev != NULL)) {
+      list_remove(&temp->elem);
+      list_push_back(&ready_list, &temp->elem);
+    }
+
+  }
+
+}
+
+/* Returns the highest-valued priority of the threads currently waiting for lock(s) held
+by the "temp" thread (including the priority of "temp" itself). */
+void getNewPriority(struct thread *temp) {
+
+  struct list_elem *a; // dummy list element for for-loop
+  int highestPriority = 0;
+
+  // Cycle through locks "temp" holds & threads waiting on each lock. Find/update highest priority.
+  for ( (a = list_begin(&temp->locksHeld)); (a != list_end(&temp->locksHeld)); (a = list_next(a)) ) {
+
+    struct lock *l = list_entry(a, struct lock, priorityHolder);
+    struct list_elem *first = list_front(&l->semaphore.waiters);
+    struct thread *firstThread = list_entry(first, struct thread, elem);
+
+    if ( (highestPriority) < (firstThread->nPriority) ) {
+      highestPriority = firstThread->nPriority;
+    }
+
+  } // end for
+
+  if (highestPriority > temp->priority) {
+    return highestPriority;
+  } else {
+    return temp->priority;
+  }
+}
+
 
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */

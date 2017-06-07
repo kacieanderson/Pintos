@@ -224,6 +224,11 @@ timer_interrupt (struct intr_frame *args UNUSED)
     while ( (tempThread->unblockTime) <= (ticks) ){
 
       thread_unblock(tempThread);
+
+      if ( (tempThread->nPriority) > (thread_current()->nPriority) ) {
+        intr_yield_on_return();
+      }
+
       list_pop_front(&blockedList);
 
       // Break if current thread was the last one left on blockedList...
