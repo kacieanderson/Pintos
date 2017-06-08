@@ -28,12 +28,11 @@ Kacie Anderson <kqanders@usc.edu>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
-** Two additions to "struct thread" in "thread.h":
-	struct list_elem blockedListElem // A list element for blockedList 
+** One addition to "struct thread" in "thread.h":
     int64_t unblockTime // Time at which current thread should be unblocked
 
 ** One new static variable in "timer.c":
-	static struct list blockedList; // List of blocked threads to be woken up
+	static struct list blockList; // List of blocked threads to be woken up
 
 ---- ALGORITHMS ----
 
@@ -43,49 +42,49 @@ Kacie Anderson <kqanders@usc.edu>
 ** First, check to make sure that the value of "ticks" (denoting timer ticks) is 
 	nonnegative (sanity check).
 
-	Obtain the current thread ("temp") and define "unblockTime," the time at which this current thread 
+	Obtain the current thread ("temp") and define its "unblockTime," the time at which it 
 	should be "woken up," i.e. unblocked (given by start + ticks). 
 
-	Add the current thread to "blockedList," which is the list of threads waiting to be "woken up."
-	blockedList is accessible to all threads and thus modification by those threads. Thus, briefly 
+	Add the current thread to "blockList," which is the list of threads waiting to be "woken up."
+	blockList is accessible to all threads and thus modification by those threads. Thus, briefly 
 	disabling interrupts is necessary so the addition of this current thread to blockedList 
 	happens correctly.
 
-	The addition of the current thread to blockedList is done via the list_insert_ordered 
-	function and a helper function I wrote in "timer.c" called "compareUnblockTimes." These ensure
-	that blockedList is ordered from smallest to largest unblockTime. 
+	The addition of the current thread to blockList is done via the list_insert_ordered 
+	function and a helper function I wrote in "thread.c" called "compareUnblockTimes." These ensure
+	that blockList is ordered from smallest to largest unblockTime. 
 
- After the current thread is added to blockedList, it is blocked (thread_block). Then, interrupts
- are immediately re-enabled.
+ 	After the current thread is added to blockList, it is blocked (thread_block). Then, interrupts
+ 	are immediately re-enabled.
 
 >> A3: What steps are taken to minimize the amount of time spent in
 >> the timer interrupt handler?
 
 ** In "timer_sleep," I chose to use the list_insert_ordered and compareUnblockTimes functions specifically 
 	to minimize the amount of time spent in the timer interrupt handler. 
-	Since blockedList is ordered by smallest to largest unblockTime, the timer interrupt handler only needs 
+	Since blockList is ordered by smallest to largest unblockTime, the timer interrupt handler only needs 
 	to look at the first thread on the list instead of sorting through it each time.
-	The timer interrupt handler checks the first thread on blockedList, and if that thread's unblockTime is 
-	smaller than the current time, it is woken up & popped off blockedList. Then, the timer interrupt handler 
-	checks the new first thread on blockedList, and so on.
+	The timer interrupt handler checks the first thread on blockList, and if that thread's unblockTime is 
+	smaller than the current time, it is woken up & popped off blockList. Then, the timer interrupt handler 
+	checks the new first thread on blockList, and so on.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: How are race conditions avoided when multiple threads call
 >> timer_sleep() simultaneously?
 
-** In "timer_sleep," the goal is to give access to "blockedList" and the subsequent "thread_block" line to 
+** In "timer_sleep," the goal is to give access to "blockList" and the subsequent "thread_block" line to 
 	only one thread at a time. To make sure multiple threads do not simultaneously have access to these 
 	instructions, I briefly disabled interrupts in "timer_sleep" only while the current thread is being added 
-	to blockedList and, directly after, while the current thread is being blocked. Then, interrupts are 
+	to blockList and, directly after, while the current thread is being blocked. Then, interrupts are 
 	re-enabled.
 
 >> A5: How are race conditions avoided when a timer interrupt occurs
 >> during a call to timer_sleep()?
 
-** The potential race condition from a timer interrupt would be due to its modification of "blockedList," which
+** The potential race condition from a timer interrupt would be due to its modification of "blockList," which
 	is shared between the timer interrupt handler and "timer_sleep." The fact that I disabled interrupts briefly
-	in "timer_sleep" during the addition to blockedList & subsequent thread_block of the current thread ensures
+	in "timer_sleep" during the addition to blockList & subsequent thread_block of the current thread ensures
 	that timer interrupts will not cause a race condition.
 
 ---- RATIONALE ----
@@ -111,20 +110,92 @@ Kacie Anderson <kqanders@usc.edu>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+** Four additions to "struct thread" in "thread.h":
+	int nPriority; // separate variable to safely modify priority value for each thread
+    struct lock *locksWaitingOn; // Lock the current thread is waiting for
+    struct list locksHeld; // Lock(s) the current thread holds that other threads are waiting for
+    struct list_elem locksHeldListElem; // list element for the locksHeld list
+
 >> B2: Explain the data structure used to track priority donation.
 >> Use ASCII art to diagram a nested donation.  (Alternately, submit a
 >> .png file.)
+
+	------------
+	|  ( Lo )  | (holds lock LB below)
+	------------
+		 ||
+   	   ------
+	  || LB ||
+	   ------
+		 ||
+	------------
+	| ( Med  ) | (holds lock LA below, waiting for lock LB above)
+	------------
+		 ||
+   	  --------
+	  || LA ||
+	  --------
+		 ||
+	------------
+	| (  Hi  ) | (waiting for lock LA above)
+	------------
+
+** Imagine there are 3 threads (Hi, Med, and Lo) and 2 locks (LA & LB). LA is
+	held by thread Med and LB is held by thread Lo. Hi is waiting for LA, and Med is waiting for LB.
+	Hi will need to trigger priority donation to Med. Once this has occurred, Med will need to trigger priority donation to Lo. After this "chain" of priority donation, Hi, Med & Lo will all have priorities equal to Hi's.
+
+	Thus: 
+	Hi's locksHeld list = NULL
+	Hi's locksWaitingOn lock = LA
+	Hi's priority after (attempted) donation = it's own original priority
+
+	Med's locksHeld list = Hi
+	Med's locksWaitingOn lock = LB
+	Med's priority after donation = the maximum value between its own
+		priority & Hi's priority
+
+	Lo's locksHeld list = Med
+	Lo's locksWaitingOn lock = NULL
+	Lo's priority after donation = the maximum value between its own
+		priority & Med's priority
+
 
 ---- ALGORITHMS ----
 
 >> B3: How do you ensure that the highest priority thread waiting for
 >> a lock, semaphore, or condition variable wakes up first?
 
+** When the list of waiters for a semaphore is propogated in sema_down(),
+	I made sure they are inserted via list_insert_ordered so that the
+	first thread in the list is the one with the highest priority. I also
+	made sure to include list_sort in several functions, for good measure.
+
 >> B4: Describe the sequence of events when a call to lock_acquire()
 >> causes a priority donation.  How is nested donation handled?
 
+** First, interrupts are disabled. Then, a copy of the current running
+	thread is stored in local thread "temp." Temp updates its "locksWaitingOn" to "lock," which was passed in the function.
+	Temp is then added to the "locksHeld" list for the thread that currently
+	holds the lock.
+	Then, while the lock still exists:
+		The function checks to see if there is still a thread holding the
+		lock. If not, it returns.
+		If a thread is indeed still holding the lock, and that thread's
+		priority is greater than or equal to the current thread (temp)'s
+		priority, the function returns because priority donation is not 
+		necessary.
+		If priority donation is necessary, the thread that holds the lock
+		will have its priority changed to be equal to temp's priority.
+		Then, the lock itself is updated to the next lock the thread needs.
+
+
 >> B5: Describe the sequence of events when lock_release() is called
 >> on a lock that a higher-priority thread is waiting for.
+
+** First, interrupts are disabled. Then, the lock is released from the thread
+	that it is associated with by setting "lock->holder" to NULL.
+	Since priority donation is finished when the lock is released, we must update the priorities of associated threads. The thread with the highest priority on the list of waiting threads is granted the lock and placed on
+	the ready list. thread_yield() is called as a precaution in case the current thread no longer has the highest priority.
 
 ---- SYNCHRONIZATION ----
 
@@ -132,10 +203,20 @@ Kacie Anderson <kqanders@usc.edu>
 >> how your implementation avoids it.  Can you use a lock to avoid
 >> this race?
 
+** A race condition in thread_set_priority() could occur when the priority of
+	the current thread is being changed to "new_priority" right when the interrupt handler is modifying that value. 
+	You cannot use a lock to avoid this race condition because the interrupt handler is a function that cannot use locks. 
+	In my implementation, I disabled interrupts in thread_set_priority() to avoid this race condition.
+
 ---- RATIONALE ----
 
 >> B7: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+
+** I tried several different approaches to priority donation, but did not
+	get very far before having to scrap everything and start over. I decided to focus on relying on list_insert_ordered for lists associated with priority, because it ensures that the maximum priority would be easily accessible. From there, the use of several simple helper functions to keep things in check made for a relatively clean and understandable design. An alternative option would have been to keep all of my lists unordered, therefore needing to search through them to retrieve the highest priority when needed. This may have resulted in a faster design,
+	but I found the assignment much easier to work with with sorted lists.
+
 
 			  ADVANCED SCHEDULER
 			  ==================
