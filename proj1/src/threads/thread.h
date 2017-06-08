@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -90,14 +91,15 @@ struct thread
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
 
-    /* Shared between thread.c and synch.c. */
+    /* Shared between thread.c and synch.c.
+       Used in ready and sleep lists */
     struct list_elem elem;              /* List element. */
-    struct list_elem blockedListElem; // A list element for blockedList (project 1 timer)
+
     int64_t unblockTime; // Time at which current thread should be unblocked (project 1 timer)
     int nPriority; // separate variable to safely modify priority value
-    struct list locksHeld; // Lock(s) current thread holds that other threads are waiting for
     struct lock *locksWaitingOn; // Lock current thread is waiting for
-
+    struct list locksHeld; // Lock(s) current thread holds that other threads are waiting for
+    struct list_elem locksHeldListElem; 
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -139,7 +141,13 @@ void thread_foreach (thread_action_func *, void *);
 int thread_get_priority (void);
 void thread_set_priority (int);
 
-bool comparePriorities (const struct list_elem *, const struct list_elem *, void *);
+bool compareUnblockTimes (const struct list_elem *first, const struct list_elem *second, void *aux UNUSED);
+bool comparePriorities (const struct list_elem *first, const struct list_elem *second,void *aux UNUSED);
+
+void maxPriority (void);
+void updatePriority(void);
+void priorityDonation(void);
+void lockRemoval(struct lock *lock);
 
 int thread_get_nice (void);
 void thread_set_nice (int);
