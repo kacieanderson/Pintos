@@ -4,7 +4,8 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
-#include <stdbool.h>
+#include <kernel/list.h>
+#include <threads/synch.h>
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -26,13 +27,11 @@ typedef int tid_t;
 #define PRI_MAX 63                      /* Highest priority. */
 
 /* A kernel thread or user process.
-
    Each thread structure is stored in its own 4 kB page.  The
    thread structure itself sits at the very bottom of the page
    (at offset 0).  The rest of the page is reserved for the
    thread's kernel stack, which grows downward from the top of
    the page (at offset 4 kB).  Here's an illustration:
-
         4 kB +---------------------------------+
              |          kernel stack           |
              |                |                |
@@ -54,22 +53,18 @@ typedef int tid_t;
              |               name              |
              |              status             |
         0 kB +---------------------------------+
-
    The upshot of this is twofold:
-
       1. First, `struct thread' must not be allowed to grow too
          big.  If it does, then there will not be enough room for
          the kernel stack.  Our base `struct thread' is only a
          few bytes in size.  It probably should stay well under 1
          kB.
-
       2. Second, kernel stacks must not be allowed to grow too
          large.  If a stack overflows, it will corrupt the thread
          state.  Thus, kernel functions should not allocate large
          structures or arrays as non-static local variables.  Use
          dynamic allocation with malloc() or palloc_get_page()
          instead.
-
    The first symptom of either of these problems will probably be
    an assertion failure in thread_current(), which checks that
    the `magic' member of the running thread's `struct thread' is
@@ -91,15 +86,24 @@ struct thread
     int priority;                       /* Priority. */
     struct list_elem allelem;           /* List element for all threads list. */
 
-    /* Shared between thread.c and synch.c.
-       Used in ready and sleep lists */
+    /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
-
+    struct list_elem blockedListElem; // A list element for blockedList (project 1 timer)
     int64_t unblockTime; // Time at which current thread should be unblocked (project 1 timer)
-    int nPriority; // separate variable to safely modify priority value
-    struct lock *locksWaitingOn; // Lock current thread is waiting for
-    struct list locksHeld; // Lock(s) current thread holds that other threads are waiting for
-    struct list_elem locksHeldListElem; 
+
+    // proj2 additions
+    bool success;
+    int exitErr;
+    int fdNum;
+    int processWaitingFor;
+
+    struct list childProcesses;
+    struct list files;
+
+    struct thread *parent;
+    struct file *me;
+    struct semaphore childLock;
+    
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -108,6 +112,16 @@ struct thread
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
+  };
+
+  // child process struct for proj2
+  struct child {
+
+    int tid;
+    struct list_elem elem;
+    int exitErr;
+    bool active;
+    
   };
 
 /* If false (default), use round-robin scheduler.
@@ -140,14 +154,6 @@ void thread_foreach (thread_action_func *, void *);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
-
-bool compareUnblockTimes (const struct list_elem *first, const struct list_elem *second, void *aux UNUSED);
-bool comparePriorities (const struct list_elem *first, const struct list_elem *second,void *aux UNUSED);
-
-void maxPriority (void);
-void updatePriority(void);
-void priorityDonation(void);
-void lockRemoval(struct lock *lock);
 
 int thread_get_nice (void);
 void thread_set_nice (int);
