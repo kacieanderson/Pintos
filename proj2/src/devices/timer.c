@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <round.h>
 #include <stdio.h>
+#include <list.h>
 #include "devices/pit.h"
 #include "threads/interrupt.h"
 #include "threads/synch.h"
@@ -17,11 +18,10 @@
 #error TIMER_FREQ <= 1000 recommended
 #endif
 
-/* List of processes sleeping */
-static struct list blockList; //sleep_list;
-
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
+
+static struct list blockedList; // List of blocked threads to be woken up
 
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
@@ -38,9 +38,28 @@ static void real_time_delay (int64_t num, int32_t denom);
 void
 timer_init (void) 
 {
+
+  list_init(&blockedList);
+
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
-  list_init(&blockList);
+}
+
+/* Helper function for properly constructing the blockedList (with use of list_insert_ordered)
+  Compare unblockTimes of two threads (value of which is stored in list_elem of each thread). 
+  Return true when "first" thread's unblockTime occurs earlier than the "second" thread's. 
+  Return false if "first"'s unblockTime occurs at the same time or after "second"'s unblockTime.*/
+static bool compareUnblockTimes(const struct list_elem *first, const struct list_elem *second, void *aux UNUSED){
+
+  const struct thread *firstThread = list_entry(first, struct thread, blockedListElem);
+  const struct thread *secondThread = list_entry(second, struct thread, blockedListElem);
+
+  if ( (firstThread->unblockTime) < (secondThread->unblockTime) ){
+    return true;
+  } else {
+    return false;
+  }
+
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -93,23 +112,25 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
-  ASSERT (intr_get_level () == INTR_ON); // interrupts are on
 
-  if ( ticks <= 0){
+  if ( (ticks) <= 0){
     return; // for passing the alarm-negative test 
   }
 
   int64_t start = timer_ticks ();
-  enum intr_level old_level = intr_disable (); // briefly disable interrupts
-  
+  ASSERT (intr_get_level () == INTR_ON); // interrupts are on
+
   struct thread *temp = thread_current();
   temp->unblockTime = (start + ticks);
 
-  /* Insert current thread into blockList in correct order based on unblockTime, then block the thread.*/
-  list_insert_ordered(&blockList, &temp->elem, compareUnblockTimes, NULL);
+  enum intr_level old_level = intr_disable (); // briefly disable interrupts
+  /* Insert current thread into blockedList in correct order based on unblockTime, then block the thread.*/
+  list_insert_ordered(&blockedList, &temp->blockedListElem, compareUnblockTimes, NULL);
   thread_block();
   intr_set_level (old_level); // re-enable interrupts
 
+  // while (timer_elapsed (start) < ticks) 
+  //   thread_yield ();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -138,7 +159,6 @@ timer_nsleep (int64_t ns)
 
 /* Busy-waits for approximately MS milliseconds.  Interrupts need
    not be turned on.
-
    Busy waiting wastes CPU cycles, and busy waiting with
    interrupts off for the interval between timer ticks or longer
    will cause timer ticks to be lost.  Thus, use timer_msleep()
@@ -151,7 +171,6 @@ timer_mdelay (int64_t ms)
 
 /* Sleeps for approximately US microseconds.  Interrupts need not
    be turned on.
-
    Busy waiting wastes CPU cycles, and busy waiting with
    interrupts off for the interval between timer ticks or longer
    will cause timer ticks to be lost.  Thus, use timer_usleep()
@@ -164,7 +183,6 @@ timer_udelay (int64_t us)
 
 /* Sleeps execution for approximately NS nanoseconds.  Interrupts
    need not be turned on.
-
    Busy waiting wastes CPU cycles, and busy waiting with
    interrupts off for the interval between timer ticks or longer
    will cause timer ticks to be lost.  Thus, use timer_nsleep()
@@ -186,27 +204,35 @@ timer_print_stats (void)
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
+  // Temporary variables to store the blockedListElems and threads we want to check
+  struct list_elem *tempElem;
+  struct thread *tempThread;
+
   ticks++;
   thread_tick ();
 
-  struct list_elem *tempElem = list_begin(&blockList);
+  if (!list_empty(&blockedList)){
 
-  while (tempElem != list_end(&blockList)) {
+    // get data for the first thread on blockedList (should have the smallest unblockTime)
+    tempElem = list_front(&blockedList);
+    tempThread = list_entry(tempElem, struct thread, blockedListElem);
 
-    struct thread *tempThread = list_entry(tempElem, struct thread, elem);
+    // unblock all threads whose unblockTime occurred before the interrupt (the current time)
+    while ( (tempThread->unblockTime) <= (ticks) ){
 
-    if ( (ticks) < (tempThread->unblockTime) ) {
-      break;
-    }
+      thread_unblock(tempThread);
+      list_pop_front(&blockedList);
 
-    list_remove(tempElem);
-    thread_unblock(tempThread);
-    tempElem = list_begin(&blockList);
+      // Break if current thread was the last one left on blockedList...
+      if (list_empty(&blockedList)){
+        break;
+      }
 
-  }
-
-  maxPriority();
-
+      // ... but if there are more threads on blockedList, check to see if the next one can be unblocked.
+      tempElem = list_front(&blockedList);
+      tempThread = list_entry(tempElem, struct thread, blockedListElem);
+    } // end while
+  } // end if
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
@@ -230,7 +256,6 @@ too_many_loops (unsigned loops)
 
 /* Iterates through a simple loop LOOPS times, for implementing
    brief delays.
-
    Marked NO_INLINE because code alignment can significantly
    affect timings, so that if this function was inlined
    differently in different places the results would be difficult
