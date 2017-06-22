@@ -18,6 +18,8 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+extern struct list all_list;
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -28,6 +30,8 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
+  char *name; 
+  char *tempPointer;
   char *fn_copy;
   tid_t tid;
 
@@ -38,10 +42,26 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  name = malloc( strlen(file_name) + 1 );
+  strlcpy ( name, file_name, strlen(file_name) + 1 );
+  name = strtok_r ( name, " ", &tempPointer );
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (name, PRI_DEFAULT, start_process, fn_copy); 
+  
+  free(name); 
+  
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
+
+  sema_down( &thread_current()->childLock );
+
+  if ( (thread_current()->success) == false ) {
+
+    return -1;
+
+  }
+
   return tid;
 }
 
@@ -63,8 +83,20 @@ start_process (void *file_name_)
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  if (!success) 
-    thread_exit ();
+
+  if ( !success ) { 
+    
+    thread_current()->parent->success = false;
+    sema_up( &thread_current()->parent->childLock );
+
+    thread_exit();
+
+  } else {
+
+    thread_current()->parent->success = true;
+    sema_up( &thread_current()->parent->childLock );
+
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -88,7 +120,49 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  return -1;
+
+  struct list_elem *count;
+  struct list_elem *replace = NULL;
+
+  struct thread *t = thread_current();
+  struct child *c = NULL;
+
+  for ( count = list_begin(&t->childProcesses); count != list_end(&t->childProcesses); count = list_next(count) ) {
+
+    struct child *tempChild = list_entry(count, struct child, elem);
+
+    if ( (tempChild->tid) == (child_tid) ) {
+      c = tempChild;
+      replace = count;
+    }
+
+  }
+
+  if ( !c ) {
+
+    return -1;
+
+  }
+
+  if ( !replace ) {
+
+    return -1;
+
+  }
+
+  t->processWaitingFor = c->tid; 
+
+  if ( !c->active ) {
+
+    sema_down( &t->childLock );
+
+  }
+
+  int i = c->exitErr; 
+
+  list_remove(replace);
+  return i;
+
 }
 
 /* Free the current process's resources. */
@@ -97,6 +171,22 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  if ( (cur->exitErr) == -100 ) {
+
+    exitProcess(-1); 
+
+  }
+
+  int code = cur->exitErr;
+  printf( "%s: exit(%d)\n",cur->name, code );
+
+  acquireFilesysLock();
+
+  file_close( thread_current()->me );
+  closeAllFiles( &thread_current()->files ); 
+
+  releaseFilesysLock(); 
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -195,7 +285,7 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, char * commandLine);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -215,14 +305,25 @@ load (const char *file_name, void (**eip) (void), void **esp)
   bool success = false;
   int i;
 
+  acquireFilesysLock(); 
+
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
 
+  char *fileChild = malloc( strlen(file_name) + 1 );
+  strlcpy( fileChild, file_name, strlen(file_name) + 1 );
+
+  char *tempPointer;
+  fileChild = strtok_r( fileChild, " ", &tempPointer );
+
   /* Open executable file. */
-  file = filesys_open (file_name);
+  file = filesys_open (fileChild);
+
+  free(fileChild); 
+
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
@@ -302,7 +403,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (esp, file_name))
     goto done;
 
   /* Start address. */
@@ -310,10 +411,14 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   success = true;
 
+  file_deny_write(file);
+  thread_current()->me = file;
+
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  releaseFilesysLock();
   return success;
+
 }
 
 /* load() helpers. */
@@ -427,7 +532,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, char * file_name) 
 {
   uint8_t *kpage;
   bool success = false;
@@ -437,11 +542,66 @@ setup_stack (void **esp)
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        *esp = PHYS_BASE;
+        *esp = PHYS_BASE - 12;
       else
         palloc_free_page (kpage);
     }
+
+  char *tok;
+  char *tempPointer;
+  int argC = 0;
+  int i;
+
+  char *cpy = malloc( strlen(file_name) + 1 );
+  strlcpy( cpy, file_name, strlen(file_name) + 1 );
+
+  for ( tok = strtok_r(cpy, " ", &tempPointer); tok != NULL; tok = strtok_r(NULL, " ", &tempPointer) ) {
+
+    argC++;
+
+  }
+
+  int *argV = calloc( argC, sizeof(int) );
+
+  for ( tok = strtok_r(file_name, " ", &tempPointer), i = 0; tok != NULL; tok = strtok_r(NULL, " ", &tempPointer), i++ ) {
+
+    *esp -= strlen(tok) + 1;
+    memcpy( *esp, tok, strlen(tok) + 1 );
+    argV[i] = *esp;
+
+  }
+
+  while( ((int)*esp % 4) != 0 ) {
+
+    *esp -= sizeof(char);
+    char a = 0;
+    memcpy( *esp, &a, sizeof(char) );
+
+  }
+
+  int zip = 0;
+  *esp -= sizeof(int);
+  memcpy( *esp, &zip, sizeof(int) );
+
+  for ( i = (argC - 1); i >= 0; i-- ) {
+
+    *esp -= sizeof(int);
+    memcpy( *esp, &argV[i], sizeof(int) );
+
+  }
+
+  int t = *esp;
+  *esp = t - sizeof(int);
+  memcpy( *esp, &t, sizeof(int) );
+  *esp -= sizeof(int);
+  memcpy( *esp, &argC, sizeof(int) );
+  *esp -= sizeof(int);
+  memcpy( *esp, &zip, sizeof(int) );
+
+  free(cpy);
+  free(argV);
   return success;
+
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel
