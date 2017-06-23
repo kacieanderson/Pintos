@@ -14,11 +14,11 @@ static void syscall_handler (struct intr_frame *);
 void* check( const void* );
 struct processFile* traverse( struct list* files, int fd );
 
-struct processFile {
+struct processFile { // A struct that holds info about a file the current thread is associated with
 
-	struct file *point;
-	int fd;
-	struct list_elem elem; 
+	struct file *point; // pointer variable to the file in question
+	int fd; // file descriptor for said file
+	struct list_elem elem; // list element to keep list of processFiles
 
 };
 

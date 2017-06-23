@@ -92,17 +92,17 @@ struct thread
     int64_t unblockTime; // Time at which current thread should be unblocked (project 1 timer)
 
     // proj2 additions
-    bool success;
-    int exitErr;
-    int fdNum;
-    int processWaitingFor;
+    bool success; // Indicates (true) if the thread does not exceed page size limit
+    int exitErr; // Exit status for current thread
+    int fdNum; // File descriptor number for current process (start at 2)
+    int processWaitingFor; // Keep track of the tid of a child process the current process is waiting for
 
-    struct list childProcesses;
-    struct list files;
+    struct list childProcesses; // List of child processes for current process
+    struct list files; // List of files for current process
 
-    struct thread *parent;
-    struct file *me;
-    struct semaphore childLock;
+    struct thread *parent; // points to parent of current process
+    struct file *me; // File running in current process
+    struct semaphore childLock; // Synchronization
     
 
 #ifdef USERPROG
@@ -114,13 +114,12 @@ struct thread
     unsigned magic;                     /* Detects stack overflow. */
   };
 
-  // child process struct for proj2
-  struct child {
+  struct child { // A struct to hold information about a child process of the currently running process
 
-    int tid;
-    struct list_elem elem;
-    int exitErr;
-    bool active;
+    int tid; // child process's tid
+    struct list_elem elem; // list element
+    int exitErr; // Exit status for child process
+    bool active; // Indicates (true) if child has exited
     
   };
 

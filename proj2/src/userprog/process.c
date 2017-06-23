@@ -127,6 +127,7 @@ process_wait (tid_t child_tid UNUSED)
   struct thread *t = thread_current();
   struct child *c = NULL;
 
+  // Traverse through current thread's list of child processes to see if it has a child that matches
   for ( count = list_begin(&t->childProcesses); count != list_end(&t->childProcesses); count = list_next(count) ) {
 
     struct child *tempChild = list_entry(count, struct child, elem);
@@ -138,19 +139,19 @@ process_wait (tid_t child_tid UNUSED)
 
   }
 
-  if ( !c ) {
+  if ( !c ) { // We didn't find a matching child, so return -1
 
     return -1;
 
   }
 
-  if ( !replace ) {
+  if ( !replace ) { // The childProcess list may be empty... return -1
 
     return -1;
 
   }
 
-  t->processWaitingFor = c->tid; 
+  t->processWaitingFor = c->tid; // We found the child process & wait in semaphore for it to exit
 
   if ( !c->active ) {
 
@@ -158,9 +159,9 @@ process_wait (tid_t child_tid UNUSED)
 
   }
 
-  int i = c->exitErr; 
+  int i = c->exitErr; // Get child's exit status
 
-  list_remove(replace);
+  list_remove(replace); // Remove child from childProcesses list
   return i;
 
 }
