@@ -15,6 +15,12 @@ Kacie Anderson <kqanders@usc.edu>
 >> If you have any preliminary comments on your submission, notes for the
 >> TAs, or extra credit, please give them here.
 
+*** I had to update the last lines of src/vm/Make.vars and src/userprog/Make.vars
+	so that the default emulator is bochs instead of qemu. For some reason, "make check"
+	in qemu causes the very first test to terminate the entire process with the error
+	message "Run didn't start up properly: no "Pintos booting" message."
+	When I switched to bochs everything works correctly.
+
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
 >> text, lecture notes, and course staff.
@@ -28,19 +34,40 @@ Kacie Anderson <kqanders@usc.edu>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+*** 1 modification to an existing function in "process.c":
+	static bool setup_stack (void **esp, char * commandLine);
+		** A NULL pointer points to the start of the command line to divide arguments from file name. The addition char * commandLine denotes the arguments.
+
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe how you implemented argument parsing.  How do
 >> you arrange for the elements of argv[] to be in the right order?
 >> How do you avoid overflowing the stack page?
 
+*** Parsing is accomplished in the "setup_stack" function. As the command line is parsed, every arguments' string of chars is pushed on the stack. "argV[]" holds the pointers to each arg's position on the stack. 
+
+argV[] is initialized with "calloc" because there is no way of knowing in advance how many command line arguments will be pushed, and I want to make sure the space in memory is sufficiently allocated.
+
+Once argV[] holds the stack position for all of the arguments (done using a for loop after allocating the space for argV[]), I adjust the stack to make sure words are aligned to 4 bytes. The array is then pushed on the stack in a reverse-ordered for loop (to ensure correctness). Then, addresses of the pointers to the first argument, then argC, then return address are pushed on the stack.
+
+Overflowing the stack page is handled in "load" If the space needed for the arguments, pointers, int value, and return address is larger than a page, the function will return false.
+
 ---- RATIONALE ----
 
 >> A3: Why does Pintos implement strtok_r() but not strtok()?
+*** A function will keep track of the last place a pointer/token
+	was found within its scope, i.e. internally. So, if more than one thread calls strtok(), there could be a race condition in which one thread ends up getting bad values for the token. strtok_r() stores the pointer/token to an external/safe place outside of the function, allowing one to avoid the race condition.
+
 
 >> A4: In Pintos, the kernel separates commands into a executable name
 >> and arguments.  In Unix-like systems, the shell does this
 >> separation.  Identify at least two advantages of the Unix approach.
+
+*** The shell has the ability to inspect potentially dangerous
+	arguments before sending anything to kernel mode.
+
+*** Processing arguments/allocating memory in the shell 
+	(user mode) is safer than doing so in kernel mode. It would be devastating for the kernel to overallocate & run out of memory, but it wouldn't be too big of a problem if a user program did so.
 
 			     SYSTEM CALLS
 			     ============
@@ -51,14 +78,45 @@ Kacie Anderson <kqanders@usc.edu>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+*** New in "struct thread" in thread.h:
+	bool success; // Indicates (true) if the thread does not 					exceed page size limit
+    int exitErr; // Exit status
+    int fdNum; // File descriptor number for current process (					start at 2)
+    int processWaitingFor;
+
+    struct list childProcesses; // List of child processes for 								current process
+    struct list files; // List of files for current process
+
+    struct thread *parent; // points to parent of current process
+    struct file *me; // File running in current process
+    struct semaphore childLock; // Synchronization for children
+
+    ** And new in thread.h:
+    struct child {
+
+    int tid; // child process's tid
+    struct list_elem elem; // list element
+    int exitErr; // Exit status
+    bool active; // Indicates (true) if child has exited
+    
+  	};
+
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
+
+*** File descriptors are unique within each file in each process.
+	Every time a process opens a new file, "fdNum" (the counter for the file descriptor) is incremented by a value of 1. 
 
 ---- ALGORITHMS ----
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
+
+*** The stack pointer's integrity is checked in the helper
+	function "check" by analyzing its address. If it is at an invalid address, "exitProcess" is immediately run. If it is okay, the program proceeds.
+
+	For each argument, the stack pointer is checked, and if valid, translated to a kernel address. Then, the SYS_"..." functions do their work and data is translated back using "eax."
 
 >> B4: Suppose a system call causes a full page (4,096 bytes) of data
 >> to be copied from user space into the kernel.  What is the least
@@ -67,8 +125,17 @@ Kacie Anderson <kqanders@usc.edu>
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
 
+*** The greatest possible number of inspections of the page table
+	would be 2. This could happen when there is a system call with only 2 bytes of data, if those bytes take up two pages. It could also happen when the full page of 4,096 bytes spans 2 pages. The operating system needs to inspect once at the beginning of the page of data and once at the end to ensure accuracy.
+
+
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
+
+*** "process_wait" uses a for loop to look through the child
+	process that matches the "child_tid" it is given. If the current process is already waiting for the requested child, or if the child_tid is not in the current process's list, the function returns -1.
+
+	If the child process is found, the current process sets its "processWaitingFor" variable to equal the child tid. The current process then waits for the child process to exit. Once that occurs, the current process recieves the exit status of the child, and the child process is removed from the current process's list of children. The function returns the exit status of this child process.
 
 >> B6: Any access to user program memory at a user-specified address
 >> can fail due to a bad pointer value.  Such accesses must cause the
@@ -84,12 +151,22 @@ Kacie Anderson <kqanders@usc.edu>
 >> paragraphs, describe the strategy or strategies you adopted for
 >> managing these issues.  Give an example.
 
+*** The error-handling helper function "check" is called at the
+	very beginning of every system call to make sure that the stack pointer value (with any necessary offset) is valid. This accounts for pointers that are outside of the appropriate address space and pointers that may be NULL.
+
+	Also, locks are used throughout system calls to avoid race conditions - see that "acquireFilesysLock" and "releaseFilesysLock" are rampant in syscall.c.
+
+	Finally, I have written the function exitProcess which handles any user process that is exited or terminated by kernel mode. This appropriately assigns exit status, frees the process's child list and updates its parent's semaphore if it is waiting, and calls thread_exit(), which deallocates the remainder of the resources. This is how I properly free resources.
+
 ---- SYNCHRONIZATION ----
 
 >> B7: The "exec" system call returns -1 if loading the new executable
 >> fails, so it cannot return before the new executable has completed
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
+
+*** In "executeProcess" in syscall.c, a lock is immediately
+	acquired to ensure there will be no race conditions. The function allocates memory for the file, and attempts to load the executable. If load was unsuccessful, the file is equal to NULL, and "executeProcess" returns -1. If the load was successful, the file name is passed to "process_execute" in process.c to execute.   
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
@@ -98,16 +175,30 @@ Kacie Anderson <kqanders@usc.edu>
 >> terminates without waiting, before C exits?  After C exits?  Are
 >> there any special cases?
 
+*** If P calls wait before C exits, it sees that C is still active
+	by looking at its c->active variable and adds C's tid to its variable processWaitingFor, and then it waits in the childLock semaphore until C exits.
+	If P calls wait after C exits, it will see from C's c->active variable that C has exited, and then it will remove C (& its resources) from the childProcesses list and return with C's exit status.
+	If P terminates without waiting, before C exits: in thread_exit() in thread.c, the exiting process goes through its childProcesses list and frees the processes before removing all of its pointers/elements and exiting. No children will attempt to access it from that point on.
+	When C exits: exitProcess() in syscall.c compares tids to see if it is a child process exiting, and saves its exit status for P, which will free the exit status when it exits, itself.
+
 ---- RATIONALE ----
 
 >> B9: Why did you choose to implement access to user memory from the
 >> kernel in the way that you did?
 
+*** I chose to use helper functions and synchronization variables
+	throughout my implementation to ensure that I did everything possible to catch user program errors before actually accessing sensitive spaces in memory. By doing error checking early on, I eliminated the need to implement more difficult error checking functions such as page verification, which would be inefficient anyway.
+
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
 
+*** The unique file descriptors are useful since, as they are unique to the process, you do not have to worry about race conditions, and so you do not have to worry about implementing a synchronization variable to keep data safe. However, my implementation may not be scalable and it is difficult to debug with since there are a multitude of unique numbers.
+
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
+
+*** I did not change the mapping. If I were working with multiple threads, I would have to, though.
+
 
 			   SURVEY QUESTIONS
 			   ================
