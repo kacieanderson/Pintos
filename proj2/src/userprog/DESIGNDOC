@@ -15,11 +15,19 @@ Kacie Anderson <kqanders@usc.edu>
 >> If you have any preliminary comments on your submission, notes for the
 >> TAs, or extra credit, please give them here.
 
-*** I had to update the last lines of src/vm/Make.vars and src/userprog/Make.vars
-	so that the default emulator is bochs instead of qemu. For some reason, "make check"
-	in qemu causes the very first test to terminate the entire process with the error
-	message "Run didn't start up properly: no "Pintos booting" message."
-	When I switched to bochs everything works correctly.
+*** When I run "make check" in src/userprog/build via the (default) QEMU simulator, 
+	my test cases immediately fail and exit. When I tried to make a single test, for example,
+	"make tests/userprog/args-none.result", my tests failed with the error message "Run 
+	didn't start up properly: no "Pintos booting" message."
+
+	HOWEVER, when I updated the last lines of "src/vm/Make.vars" and "src/userprog/Make.vars"
+	simply from "SIMULATOR = --qemu" to "SIMULATOR = --bochs" (so that the default simulator 
+	is Bochs instead of QEMU), this caused all of my tests to run & pass correctly when I 
+	"make check" in src/userprog/build. 
+
+	Therefore, please run my test cases in Bochs rather than QEMU for this project. 
+	I hope this is not a problem, since I believe the code I wrote for this project is good and the only
+	difference is the simulator being used.
 
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
@@ -36,7 +44,7 @@ Kacie Anderson <kqanders@usc.edu>
 
 *** 1 modification to an existing function in "process.c":
 	static bool setup_stack (void **esp, char * commandLine);
-		** A NULL pointer points to the start of the command line to divide arguments from file name. The addition char * commandLine denotes the arguments.
+		// A NULL pointer points to the start of the command line to divide arguments from file name. The addition char * commandLine denotes the arguments.
 
 ---- ALGORITHMS ----
 
@@ -79,20 +87,20 @@ Overflowing the stack page is handled in "load" If the space needed for the argu
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
 *** New in "struct thread" in thread.h:
-	bool success; // Indicates (true) if the thread does not 					exceed page size limit
-    int exitErr; // Exit status
-    int fdNum; // File descriptor number for current process (					start at 2)
-    int processWaitingFor;
+	bool success; // Indicates (true) if the thread does not exceed page size limit
+    int exitErr; // Exit status for current process
+    int fdNum; // File descriptor number for current process (start at 2)
+    int processWaitingFor; // Keep track of the tid of a child process the current process is waiting for
 
-    struct list childProcesses; // List of child processes for 								current process
+    struct list childProcesses; // List of child processes for current process
     struct list files; // List of files for current process
 
     struct thread *parent; // points to parent of current process
     struct file *me; // File running in current process
-    struct semaphore childLock; // Synchronization for children
+    struct semaphore childLock; // Synchronization
 
     ** And new in thread.h:
-    struct child {
+    struct child { // A struct to hold information about a child process of the currently running process
 
     int tid; // child process's tid
     struct list_elem elem; // list element
@@ -101,22 +109,32 @@ Overflowing the stack page is handled in "load" If the space needed for the argu
     
   	};
 
+  	** New in syscall.c:
+  	struct processFile { // A struct that holds info about a file the current thread is associated with
+
+	struct file *point; // pointer variable to the file in question
+	int fd; // file descriptor for said file
+	struct list_elem elem; // list element to keep list of processFiles
+
+	};
+
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
 
-*** File descriptors are unique within each file in each process.
-	Every time a process opens a new file, "fdNum" (the counter for the file descriptor) is incremented by a value of 1. 
+*** File descriptors are unique for each file in each process. Every time a process opens a new file, 
+	"fdNum" (the counter for the file descriptor) is incremented by a value of 1. 
 
 ---- ALGORITHMS ----
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
 
-*** The stack pointer's integrity is checked in the helper
-	function "check" by analyzing its address. If it is at an invalid address, "exitProcess" is immediately run. If it is okay, the program proceeds.
+*** The stack pointer's integrity is checked in the helper function "check" by analyzing the address
+	it actually points to.  If it is at an invalid address (meaning it is not within the expected bounds
+	on the stack), "exitProcess" is immediately run. If the address is okay, the program proceeds.
 
-	For each argument, the stack pointer is checked, and if valid, translated to a kernel address. Then, the SYS_"..." functions do their work and data is translated back using "eax."
+	For each argument, the stack pointer is checked, and if valid, translated to a kernel address. Then, the appropriate SYS_"..." function does its work and data is translated back using "eax."
 
 >> B4: Suppose a system call causes a full page (4,096 bytes) of data
 >> to be copied from user space into the kernel.  What is the least
@@ -125,15 +143,19 @@ Overflowing the stack page is handled in "load" If the space needed for the argu
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
 
-*** The greatest possible number of inspections of the page table
-	would be 2. This could happen when there is a system call with only 2 bytes of data, if those bytes take up two pages. It could also happen when the full page of 4,096 bytes spans 2 pages. The operating system needs to inspect once at the beginning of the page of data and once at the end to ensure accuracy.
+*** The greatest possible number of inspections of the page table would be 2. This could happen when 
+there is a system call with only 2 bytes of data, if those 2 bytes end up taking up two pages. It 
+could also happen when the full page of 4,096 bytes spans 2 pages. The operating system would need to 
+inspect once at the beginning of the page of data and once at the end to ensure accuracy.
 
 
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
 
-*** "process_wait" uses a for loop to look through the child
-	process that matches the "child_tid" it is given. If the current process is already waiting for the requested child, or if the child_tid is not in the current process's list, the function returns -1.
+*** For SYS_WAIT in syscall.c, the pointer addresses are checked & then "process_wait" from process.c is called.
+
+	"process_wait" uses a for loop to look through the current process's list of child processes, in order to
+	find a process that matches the "child_tid" that is passed into the function. If the current process does not have any child processes, or if the child_tid is not in the current process's list, the function returns -1.
 
 	If the child process is found, the current process sets its "processWaitingFor" variable to equal the child tid. The current process then waits for the child process to exit. Once that occurs, the current process recieves the exit status of the child, and the child process is removed from the current process's list of children. The function returns the exit status of this child process.
 
@@ -151,12 +173,12 @@ Overflowing the stack page is handled in "load" If the space needed for the argu
 >> paragraphs, describe the strategy or strategies you adopted for
 >> managing these issues.  Give an example.
 
-*** The error-handling helper function "check" is called at the
-	very beginning of every system call to make sure that the stack pointer value (with any necessary offset) is valid. This accounts for pointers that are outside of the appropriate address space and pointers that may be NULL.
+*** The error-handling helper function "check" is called at the very beginning of every system call to make 
+	sure that the stack pointer value (with any necessary offset) is valid. This detects pointers that are outside of the appropriate address space and pointers that may be NULL.
 
 	Also, locks are used throughout system calls to avoid race conditions - see that "acquireFilesysLock" and "releaseFilesysLock" are rampant in syscall.c.
 
-	Finally, I have written the function exitProcess which handles any user process that is exited or terminated by kernel mode. This appropriately assigns exit status, frees the process's child list and updates its parent's semaphore if it is waiting, and calls thread_exit(), which deallocates the remainder of the resources. This is how I properly free resources.
+	Finally, I have written the function exitProcess which handles any user process that is exited or terminated by kernel mode. This appropriately assigns exit status, frees the process' childProcesses list and updates its parent's semaphore if it is waiting, and calls thread_exit(), which deallocates the remainder of the resources. This is how I properly free resources.
 
 ---- SYNCHRONIZATION ----
 
@@ -165,8 +187,10 @@ Overflowing the stack page is handled in "load" If the space needed for the argu
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
 
-*** In "executeProcess" in syscall.c, a lock is immediately
-	acquired to ensure there will be no race conditions. The function allocates memory for the file, and attempts to load the executable. If load was unsuccessful, the file is equal to NULL, and "executeProcess" returns -1. If the load was successful, the file name is passed to "process_execute" in process.c to execute.   
+*** In "executeProcess" in syscall.c, a lock is immediately acquired to ensure there will be no race 
+	conditions. The function allocates memory for the file, and attempts to load the executable. If load was unsuccessful, the file is equal to NULL, and "executeProcess" returns -1. If the load was successful, the file name is passed to "process_execute" in process.c to execute. "process_execute" will return -1 if the current
+	thread's "success" variable is false (indicating that the load was unsuccessful and the thread may exceed the
+	page size limit).   
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
@@ -186,8 +210,8 @@ Overflowing the stack page is handled in "load" If the space needed for the argu
 >> B9: Why did you choose to implement access to user memory from the
 >> kernel in the way that you did?
 
-*** I chose to use helper functions and synchronization variables
-	throughout my implementation to ensure that I did everything possible to catch user program errors before actually accessing sensitive spaces in memory. By doing error checking early on, I eliminated the need to implement more difficult error checking functions such as page verification, which would be inefficient anyway.
+*** I chose to use helper functions and synchronization variables throughout my implementation to ensure that 
+	I did everything possible to catch user program errors before actually accessing sensitive spaces in memory. By doing error checking early on, I eliminated the need to implement more difficult error checking functions such as page verification, which would be inefficient anyway.
 
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
