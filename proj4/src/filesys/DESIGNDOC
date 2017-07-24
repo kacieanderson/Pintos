@@ -1,0 +1,252 @@
+       	       	     +-------------------------+
+		     |		CS 140	       |
+		     | PROJECT 4: FILE SYSTEMS |
+		     |	   DESIGN DOCUMENT     |
+		     +-------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Kacie Anderson <kqanders@usc.edu>
+FirstName LastName <email@domain.example>
+FirstName LastName <email@domain.example>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+******** I was able to understand what to do for this project and did the
+		best I could to implement it. I was not able to mesh everything 
+		together on time in a working fashion.
+		That being said, PLEASE look at my code and see what I did for this
+		project. I think I understood everything well but it didn't all work
+		out.
+		I commented out the code I wrote for this project in the filesys files
+		as well as the new syscalls. It's good code!
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+		     INDEXED AND EXTENSIBLE FILES
+		     ============================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+In directory.c:
+struct dir_entry 
+  {
+    block_sector_t inode_sector;        /* Sector number of header. */
+    char name[NAME_MAX + 1];            /* Null terminated file name. */
+    bool in_use;                        /* In use or free? */
+    bool isDirectory; // Check to see if it is a directory or a file
+  };
+
+ In inode.c:
+#define NUM_DIRECT_INDEX 122 
+#define NUM_INDEX_PER_SEC ( BLOCK_SECTOR_SIZE / 4 ) 
+#define LEVEL0_CAP ( NUM_DIRECT_INDEX*BLOCK_SECTOR_SIZE)
+#define LEVEL1_CAP ( NUM_INDEX_PER_SEC*BLOCK_SECTOR_SIZE)
+#define LEVEL2_CAP ( NUM_INDEX_PER_SEC*NUM_INDEX_PER_SEC*BLOCK_SECTOR_SIZE)
+
+static struct lock openInodeLock; // hash of the open inodes
+static struct hash openInodes;
+
+struct inode_disk
+  {
+    block_sector_t start;               /* First data sector. */
+    off_t length;                       /* File size in bytes. */
+    unsigned magic;                     /* Magic number. */
+    uint32_t unused[125];               /* Not used. */
+  
+    block_sector_t index0 [NUM_DIRECT_INDEX]; // direct indexing
+    block_sector_t index1; // indirect indexing - single
+    block_sector_t index2; // indirect indexing - double
+    int isDirectory; // is 1 if true, 0 if false
+
+  };
+
+ struct indirectBlock {
+
+  block_sector_t index [NUM_INDEX_PER_SEC];
+
+};
+
+struct inode 
+  {
+    struct list_elem elem;              /* Element in inode list. */
+    block_sector_t sector;              /* Sector number of disk location. */
+    int open_cnt;                       /* Number of openers. */
+    bool removed;                       /* True if deleted, false otherwise. */
+    int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
+    struct inode_disk data;             /* Inode content. */
+    struct hash_elem elem; // Element in inode hash table
+    struct lock inodeLock; // locking/synch for inode
+    struct lock directoryLock; // locking/synch for directories
+    bool isDirectory; // Is true if this inode is a directory
+    off_t length; // File size
+  };
+
+>> A2: What is the maximum size of a file supported by your inode
+>> structure?  Show your work.
+
+Direct blocks = ( 512 - (4*6) )/4 = 122
+Indirect blocks = 512/4 = 128
+Double Indirect blocks = 128^2 = 16384
+Total blocks = direct blocks + indirect blocks + double indirect blocks = 16634
+
+Maximum file size = Total bytes = 16634*512 = 8516608
+
+---- SYNCHRONIZATION ----
+
+>> A3: Explain how your code avoids a race if two processes attempt to
+>> extend a file at the same time.
+
+****** I did not get this to work per se, but my idea was to require the process to acquire an inodeLock when it attempts to extend a file. This would avoid the race condition.
+
+
+>> A4: Suppose processes A and B both have file F open, both
+>> positioned at end-of-file.  If A reads and B writes F at the same
+>> time, A may read all, part, or none of what B writes.  However, A
+>> may not read data other than what B writes, e.g. if B writes
+>> nonzero data, A is not allowed to see all zeros.  Explain how your
+>> code avoids this race.
+
+When a process begins, inode->length and inode_disk->length values are the same (although eventuall inode's length denotes the initial size of the inode itself and inode_disk's length denotes the allocated length of the inode).
+
+If B were to write at the end of the file, it would first have to acquire an inodeLock, then go ahead and extend the file as far as it wanted to write. After that, inode_disk->length is updated to the correct length. Then, B will try to actually write its data. Once it is done, it will update inode->length to the correct length.
+
+If A was reading this data, it would only be looking at inode->length since it would not need to read inode_disk->length (it does not need a lock to read). Due to the fact that every time inode->length is updated, some data has been written to that value (inode->length), you can assume A is reading data B has written.
+
+>> A5: Explain how your synchronization design provides "fairness".
+>> File access is "fair" if readers cannot indefinitely block writers
+>> or vice versa.  That is, many processes reading from a file cannot
+>> prevent forever another process from writing the file, and many
+>> processes writing to a file cannot prevent another process forever
+>> from reading the file.
+
+**** I didn't get my implementation to work, but my intent was to have a program that required only writers attempting to extend their file to require a lock. Readers would not have to require any lock. I wanted to make it so a reader would not prevent a writer from writing. 
+
+---- RATIONALE ----
+
+>> A6: Is your inode structure a multilevel index?  If so, why did you
+>> choose this particular combination of direct, indirect, and doubly
+>> indirect blocks?  If not, why did you choose an alternative inode
+>> structure, and what advantages and disadvantages does your
+>> structure have, compared to a multilevel index?
+
+*** I was trying to write a program that supported a multilevel index. I wanted to make sure files of any sizes would be easy to handle, with the added bonus of spatial locality (smaller files need not use the indirect indexes)
+
+			    SUBDIRECTORIES
+			    ==============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+In struct thread in thread.h:
+
+struct dir *currentDirectory // The current directory the thread is associated with
+
+---- ALGORITHMS ----
+
+>> B2: Describe your code for traversing a user-specified path.  How
+>> do traversals of absolute and relative paths differ?
+
+****** I did not get this to work, but I wanted to use a function called "parse" in the filesys.c file in order to traverse a user-specified path.
+
+The function would first locate the first character in the filePath that was not a space. It would check to see if that character is "/" - if so, it would say that the current directory is the root directory, and the root directory would be opened. If the character was not "/", it would say that the current directory is the one specified by the thread, "currentDirectory", and that would be opened.
+
+Once the current directory has been found out, the function would open all subsequent directories until it located the very last one (all separated by "/"). Once a new directory is opened, its parent is closed.
+
+The value returned would be the final directory opened as well as the file's name and direcory's name.
+
+---- SYNCHRONIZATION ----
+
+>> B4: How do you prevent races on directory entries?  For example,
+>> only one of two simultaneous attempts to remove a single file
+>> should succeed, as should only one of two simultaneous attempts to
+>> create a file with the same name, and so on.
+
+******** Similar to my inodeLock, I intended to use a directoryLock for synchronization. When the process attempted to do any of the functions in directory.h (ex. read, lookup), it would first have to acquire a directoryLock.
+
+>> B5: Does your implementation allow a directory to be removed if it
+>> is open by a process or if it is in use as a process's current
+>> working directory?  If so, what happens to that process's future
+>> file system operations?  If not, how do you prevent it?
+
+******* I did not want this sort of directory removal in my program, because it could put the process in an undefined state. I wanted to implement it so that each process owned an open "dir", and have a counter that specified whether the process owned an open directory. The process would set the counter to 0 upon exiting.
+
+I intended to use this counter in the "dir_remove" function in directory.h; if the counter was at 0, the process could safely remove the directory. However, if it was above 0, removing the directory would not be allowed.
+
+---- RATIONALE ----
+
+>> B6: Explain why you chose to represent the current directory of a
+>> process the way you did.
+
+****** I wanted the currentDir, or current directory doing work, to be stored in the thread struct because I wanted to know at any point if the directory I was looking at was already being used. If it was in use, it should not be deleted.
+
+			     BUFFER CACHE
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+---- ALGORITHMS ----
+
+>> C2: Describe how your cache replacement algorithm chooses a cache
+>> block to evict.
+
+>> C3: Describe your implementation of write-behind.
+
+>> C4: Describe your implementation of read-ahead.
+
+---- SYNCHRONIZATION ----
+
+>> C5: When one process is actively reading or writing data in a
+>> buffer cache block, how are other processes prevented from evicting
+>> that block?
+
+>> C6: During the eviction of a block from the cache, how are other
+>> processes prevented from attempting to access the block?
+
+---- RATIONALE ----
+
+>> C7: Describe a file workload likely to benefit from buffer caching,
+>> and workloads likely to benefit from read-ahead and write-behind.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students in future quarters?
+
+>> Any other comments?
